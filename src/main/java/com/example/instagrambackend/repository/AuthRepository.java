@@ -6,6 +6,7 @@ import org.springframework.stereotype.Repository;
 
 import java.util.Optional;
 
+@Repository
 public interface AuthRepository extends JpaRepository<AuthModel, Long>{
     boolean existsByEmail(String email);
     Optional<AuthModel> findByEmail(String email);
