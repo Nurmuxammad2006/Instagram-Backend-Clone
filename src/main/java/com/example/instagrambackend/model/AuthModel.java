@@ -24,6 +24,7 @@ public class AuthModel {
     private String email;
     private String password;
     private String gender;
+    private String bio;
 
     @Column(name = "phone_number", nullable = false, unique = true, length = 20)
     private String phoneNumber;
