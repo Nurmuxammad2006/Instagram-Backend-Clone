@@ -32,6 +32,7 @@ public class SecurityConfig {
                 .formLogin(formLogin -> formLogin.disable())
                 .authorizeHttpRequests(auth -> auth
                         .requestMatchers("/api/auth/**").permitAll()
+                        .requestMatchers("/api/users/**").permitAll()
                         .anyRequest().authenticated()
                 );
 

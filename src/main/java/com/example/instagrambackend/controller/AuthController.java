@@ -19,9 +19,14 @@ public class AuthController {
     private AuthService authService;
 
     @PostMapping("/register")
-    public AuthModel save (@RequestBody AuthModel authModel){
-        System.out.println("User Successfully created");
-        return authService.save(authModel);
+    public ResponseEntity<?> save (@RequestBody AuthModel authModel){
+
+        try {
+            AuthModel saved = authService.save(authModel);
+            return ResponseEntity.status(HttpStatus.CREATED).body(saved);
+        }catch (RuntimeException re){
+            return ResponseEntity.status(HttpStatus.CONFLICT).body(re.getMessage());
+        }
     }
 
     @PostMapping("login")
