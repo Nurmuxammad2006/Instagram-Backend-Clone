@@ -1,16 +1,14 @@
 package com.example.instagrambackend.repository;
 
-import com.example.instagrambackend.model.AuthModel;
+import com.example.instagrambackend.domain.entity.User;
 import org.springframework.data.jpa.repository.JpaRepository;
-import org.springframework.stereotype.Repository;
 
 import java.util.Optional;
 
-@Repository
-public interface AuthRepository extends JpaRepository<AuthModel, Long>{
-    boolean existsByUsername(String username);
-    boolean existsByEmail(String email);
-    boolean existsByPhoneNumber(String phoneNumber);
-    Optional<AuthModel> findByEmail(String email);
-    Optional<AuthModel> findById(Long id);
+public interface AuthRepository extends JpaRepository<User, Long> {
+    Optional<User> findByEmail(String email);
+
+    Optional<User> findByUsername(String username);
+
+    Optional<User> findByUsernameOrEmail(String username, String email);
 }
