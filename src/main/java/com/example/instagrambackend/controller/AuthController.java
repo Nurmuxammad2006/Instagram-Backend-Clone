@@ -1,9 +1,10 @@
 package com.example.instagrambackend.controller;
 
-import com.example.instagrambackend.dto.AuthDTO;
-import com.example.instagrambackend.model.AuthModel;
+import com.example.instagrambackend.domain.requests.Register;
+import com.example.instagrambackend.domain.response.AuthResponse;
 import com.example.instagrambackend.service.AuthService;
-import org.springframework.beans.factory.annotation.Autowired;
+import jakarta.validation.Valid;
+import lombok.RequiredArgsConstructor;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.PostMapping;
@@ -13,29 +14,15 @@ import org.springframework.web.bind.annotation.RestController;
 
 @RestController
 @RequestMapping("/api/auth")
+@RequiredArgsConstructor
 public class AuthController {
 
-    @Autowired
-    private AuthService authService;
+    private final AuthService authService;
 
+    // Register
     @PostMapping("/register")
-    public ResponseEntity<?> save (@RequestBody AuthModel authModel){
-
-        try {
-            AuthModel saved = authService.save(authModel);
-            return ResponseEntity.status(HttpStatus.CREATED).body(saved);
-        }catch (RuntimeException re){
-            return ResponseEntity.status(HttpStatus.CONFLICT).body(re.getMessage());
-        }
-    }
-
-    @PostMapping("login")
-    public ResponseEntity<?> login (@RequestBody AuthDTO authDTO){
-        AuthModel userLogin = authService.login(authDTO.getEmail(), authDTO.getPassword());
-        if (userLogin == null){
-            return ResponseEntity.status(HttpStatus.UNAUTHORIZED).body("Invalid email or Password");
-        }
-        return ResponseEntity.ok(userLogin);
+    public ResponseEntity<AuthResponse> register(@RequestBody @Valid Register register) {
+        return ResponseEntity.status(HttpStatus.CREATED).body(authService.registerUser(register));
     }
 
 }
