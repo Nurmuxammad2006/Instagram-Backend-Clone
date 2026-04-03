@@ -23,6 +23,16 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
     private final JwtService jwtService;
     private final UserDetailsService userDetailsService;
 
+    /**
+     * Professional way: Skip JWT processing for public authentication endpoints
+     * This is the cleanest and most recommended approach in production.
+     */
+    @Override
+    protected boolean shouldNotFilter(HttpServletRequest request) {
+        String path = request.getRequestURI();
+        return path.startsWith("/api/auth/");
+    }
+
     @Override
     protected void doFilterInternal(HttpServletRequest request,
                                     HttpServletResponse response,
@@ -46,12 +56,10 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
 
         // 4. If email found and user not already authenticated
         if (userEmail != null && SecurityContextHolder.getContext().getAuthentication() == null) {
-
             UserDetails userDetails = userDetailsService.loadUserByUsername(userEmail);
 
             // 5. Validate token
             if (jwtService.isTokenValid(jwt, userDetails)) {
-
                 // 6. Create authentication token and set it in SecurityContext
                 UsernamePasswordAuthenticationToken authToken =
                         new UsernamePasswordAuthenticationToken(
@@ -59,11 +67,9 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
                                 null,
                                 userDetails.getAuthorities()
                         );
-
                 authToken.setDetails(
                         new WebAuthenticationDetailsSource().buildDetails(request)
                 );
-
                 SecurityContextHolder.getContext().setAuthentication(authToken);
             }
         }

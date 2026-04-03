@@ -3,16 +3,14 @@ package com.example.instagrambackend.domain.entity;
 import jakarta.persistence.*;
 import jakarta.validation.constraints.Email;
 import jakarta.validation.constraints.NotBlank;
-import lombok.AllArgsConstructor;
-import lombok.Builder;
-import lombok.Data;
-import lombok.NoArgsConstructor;
+import lombok.*;
 import org.hibernate.annotations.CreationTimestamp;
 import org.hibernate.annotations.UpdateTimestamp;
 import org.springframework.security.core.GrantedAuthority;
 import org.springframework.security.core.authority.SimpleGrantedAuthority;
 import org.springframework.security.core.userdetails.UserDetails;
 import com.example.instagrambackend.domain.enums.Role;
+
 import java.time.LocalDateTime;
 import java.util.Collection;
 import java.util.List;
@@ -63,13 +61,19 @@ public class User implements UserDetails {
     private Role role = Role.USER;
 
     @Column(name = "is_enabled")
-    private boolean isEnabled = false;
+    private boolean isEnabled = true;
 
     @CreationTimestamp
     private LocalDateTime createdAt;
 
     @UpdateTimestamp
     private LocalDateTime updatedAt;
+
+    @OneToMany(mappedBy = "user", cascade = CascadeType.ALL, orphanRemoval = true)
+    private List<EmailVerification> emailTokens;
+
+    @Column(name = "can_reset_password")
+    private boolean canResetPassword = false;
 
     @Override
     public Collection<? extends GrantedAuthority> getAuthorities() {
