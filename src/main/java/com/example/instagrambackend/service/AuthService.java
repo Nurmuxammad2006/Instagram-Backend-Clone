@@ -1,35 +1,65 @@
 package com.example.instagrambackend.service;
 
 import com.example.instagrambackend.domain.entity.EmailVerification;
+import com.example.instagrambackend.domain.entity.PasswordResetToken;
+import com.example.instagrambackend.domain.entity.RefreshToken;
 import com.example.instagrambackend.domain.entity.User;
 import com.example.instagrambackend.domain.enums.Role;
 import com.example.instagrambackend.domain.enums.VerificationType;
 import com.example.instagrambackend.domain.requests.Login;
 import com.example.instagrambackend.domain.requests.Register;
 import com.example.instagrambackend.domain.response.AuthResponse;
+import com.example.instagrambackend.exception.AppException;
 import com.example.instagrambackend.exception.UserAlreadyExistsException;
 import com.example.instagrambackend.repository.AuthRepository;
 import com.example.instagrambackend.repository.EmailVerificationRepository;
+import com.example.instagrambackend.repository.PasswordResetTokenRepository;
+import com.example.instagrambackend.repository.RefreshTokenRepository;
 import jakarta.mail.MessagingException;
-import jakarta.transaction.Transactional;
+import org.springframework.transaction.annotation.Propagation;
+import org.springframework.transaction.annotation.Transactional;
 import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
+import org.springframework.http.HttpStatus;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.stereotype.Service;
 
 import java.security.SecureRandom;
 import java.time.LocalDateTime;
+import java.time.ZonedDateTime;
+import java.util.UUID;
 
+@Slf4j
 @Service
 @RequiredArgsConstructor
 public class AuthService {
 
     private final AuthRepository authRepository;
     private final EmailVerificationRepository emailVerificationRepository;
+    private final RefreshTokenRepository refreshTokenRepository;
     private final EmailService emailService;
     private final PasswordEncoder passwordEncoder;
     private final JwtService jwtService;
+    private final PasswordResetTokenRepository passwordResetTokenRepository;
 
-    // ✅ REGISTER
+    // Helper method to create refresh token
+    private RefreshToken createRefreshToken(User user) {
+        // Revoke old tokens first
+        refreshTokenRepository.revokeAllByUser(user);
+
+        RefreshToken refreshToken = RefreshToken.builder()
+                .token(UUID.randomUUID().toString())
+                .user(user)
+                .revoked(false)
+                .expiresAt(LocalDateTime.now().plusSeconds(
+                        jwtService.getRefreshTokenExpiration() / 1000))
+                .build();
+
+        return refreshTokenRepository.save(refreshToken);
+    }
+
+    // REGISTER
+    @Transactional
     public AuthResponse registerUser(Register register) {
 
         if (authRepository.findByEmail(register.getEmail()).isPresent()) {
@@ -37,8 +67,9 @@ public class AuthService {
         }
 
         if (authRepository.findByUsername(register.getUsername()).isPresent()) {
-            throw new RuntimeException("Username already exists");
+            throw new UserAlreadyExistsException("Username already exists");
         }
+
 
         User user = User.builder()
                 .fullName(register.getFullName())
@@ -52,53 +83,136 @@ public class AuthService {
 
         authRepository.save(user);
 
-        String token = jwtService.generateToken(user);
-        return new AuthResponse(token, user.getEmail(), user.getUsername(), user.getFullName());
+        log.info("New user registered: {}", register.getEmail());
+
+        String accessToken = jwtService.generateToken(user);
+        RefreshToken refreshToken = createRefreshToken(user);
+
+        return new AuthResponse(
+                accessToken,
+                refreshToken.getToken(),
+                user.getEmail(),
+                user.getUsername(),
+                user.getFullName()
+        );
     }
 
-    // ✅ LOGIN
+    // LOGIN
+    @Transactional(noRollbackFor = AppException.class)
     public AuthResponse loginUser(Login login) {
-
         User user = authRepository.findByUsernameOrEmail(
                 login.getUsernameOrEmail(),
                 login.getUsernameOrEmail()
-        ).orElseThrow(() -> new RuntimeException("Invalid email or password"));
+        ).orElseThrow(() -> {
+            log.warn("Login failed - user not found: {}", login.getUsernameOrEmail());
+            return new AppException("Invalid email or password", HttpStatus.UNAUTHORIZED);
+        });
 
-        if (!passwordEncoder.matches(login.getPassword(), user.getPassword())) {
-            throw new RuntimeException("Invalid email or password");
+        // 1. Check if account is locked
+        if (user.getLockTime() != null) {
+            if (user.accountLocked()) {
+                log.warn("Login attempted on locked account: {}", user.getEmail());
+                throw new AppException(
+                        "Account is locked. Try again after 15 minutes.",
+                        HttpStatus.LOCKED
+                );
+            } else {
+                // LOCK EXPIRED: Reset and proceed
+                authRepository.resetFailedAttempts(user.getId());
+                user.setFailedLoginAttempts(0);
+                user.setLockTime(null);
+                log.info("Lock expired for user: {}. Counter reset.", user.getEmail());
+            }
         }
 
-        String token = jwtService.generateToken(user);
-        return new AuthResponse(token, user.getEmail(), user.getUsername(), user.getFullName());
+        // 2. Password Check
+        if (!passwordEncoder.matches(login.getPassword(), user.getPassword())) {
+            authRepository.incrementFailedAttempts(user.getId());
+
+            // Check if this latest failure triggers a lock (we use +1 because user object is stale)
+            if (user.getFailedLoginAttempts() + 1 >= 5) {
+                authRepository.lockUser(user.getId(), ZonedDateTime.now());
+                log.warn("Account locked due to too many failed attempts: {}", user.getEmail());
+                throw new AppException(
+                        "Too many failed attempts. Account locked for 15 minutes.",
+                        HttpStatus.LOCKED
+                );
+            }
+
+            log.warn("Login failed - wrong password for: {}", user.getEmail());
+            throw new AppException("Invalid email or password", HttpStatus.UNAUTHORIZED);
+        }
+
+        // 3. Successful login - reset failed attempts
+        authRepository.resetFailedAttempts(user.getId());
+        log.info("User logged in successfully: {}", user.getEmail());
+
+        String accessToken = jwtService.generateToken(user);
+        RefreshToken refreshToken = createRefreshToken(user);
+
+        return new AuthResponse(
+                accessToken,
+                refreshToken.getToken(),
+                user.getEmail(),
+                user.getUsername(),
+                user.getFullName()
+        );
     }
 
-    // ✅ SEND CODE Email verification code
+    // Refresh access token
     @Transactional
-    public void sendCode(String email) throws MessagingException {
+    public AuthResponse refreshToken(String token) {
+        RefreshToken refreshToken = refreshTokenRepository.findByToken(token)
+                .orElseThrow(() -> new AppException("Invalid refresh token"));
 
-        if (email == null || email.trim().isEmpty()) {
-            throw new IllegalArgumentException("Email cannot be empty");
+        if (refreshToken.isRevoked()) {
+            throw new AppException("Refresh token has been revoked");
         }
 
+        if (refreshToken.getExpiresAt().isBefore(LocalDateTime.now())) {
+            throw new AppException("Refresh token has expired, please login again");
+        }
+
+        User user = refreshToken.getUser();
+        String newAccessToken = jwtService.generateToken(user);
+
+        return new AuthResponse(
+                newAccessToken,
+                refreshToken.getToken(), // same refresh token
+                user.getEmail(),
+                user.getUsername(),
+                user.getFullName()
+        );
+    }
+
+    // Logout
+    @Transactional
+    public void logout(String token) {
+        RefreshToken refreshToken = refreshTokenRepository.findByToken(token)
+                .orElseThrow(() -> new AppException("Invalid refresh token"));
+
+        refreshToken.setRevoked(true);
+        refreshTokenRepository.save(refreshToken);
+    }
+
+    // MERGED: handles both EMAIL_VERIFICATION and PASSWORD_RESET
+    @Transactional
+    public void sendCode(String email, VerificationType type) throws MessagingException {
         email = email.trim().toLowerCase();
 
         User user = authRepository.findByEmail(email).orElse(null);
+        if (user == null) return; // silent fail for security
 
-        if (user == null) {
-            return;
+        if (type == VerificationType.EMAIL_VERIFICATION && user.isVerified()) {
+            throw new AppException("Email already verified", HttpStatus.CONFLICT);
         }
 
-        if (user.isVerified()) {
-            throw new RuntimeException("Email already verified");
-        }
-
-        String code = String.format("%06d",
-                new SecureRandom().nextInt(900000) + 100000);
+        String code = String.format("%06d", new SecureRandom().nextInt(900000) + 100000);
 
         EmailVerification verification = EmailVerification.builder()
                 .user(user)
                 .code(code)
-                .type(VerificationType.EMAIL_VERIFICATION)
+                .type(type)
                 .expiresAt(LocalDateTime.now().plusMinutes(5))
                 .used(false)
                 .createdAt(LocalDateTime.now())
@@ -106,98 +220,86 @@ public class AuthService {
 
         emailVerificationRepository.save(verification);
 
+        log.info("Verification code sent to: {} type: {}", email, type);
+
         emailService.sendCodeToEmail(email, code);
     }
 
-    // ✅ VERIFY CODE (MAIN FIX)
+    // MERGED: handles both EMAIL_VERIFICATION and PASSWORD_RESET
     @Transactional
-    public void verifyCode(String email, String code) {
-
+    public Object verifyCode(String email, String code, VerificationType type) {
         email = email.trim().toLowerCase();
 
         User user = authRepository.findByEmail(email)
-                .orElseThrow(() -> new RuntimeException("User not found"));
+                .orElseThrow(() -> new AppException("User not found"));
 
-        EmailVerification verification = emailVerificationRepository.findTopByUserAndCodeAndTypeAndUsedFalseOrderByCreatedAtDesc(user, code, VerificationType.EMAIL_VERIFICATION)
-                        .orElseThrow(() -> new RuntimeException("Invalid verification code"));
+        EmailVerification verification = emailVerificationRepository
+                .findTopByUserAndCodeAndTypeAndUsedFalseOrderByCreatedAtDesc(user, code, type)
+                .orElseThrow(() -> new AppException("Invalid verification code"));
 
         if (verification.getExpiresAt().isBefore(LocalDateTime.now())) {
-            throw new RuntimeException("Verification code has expired");
+            throw new AppException("Verification code has expired");
         }
 
         verification.setUsed(true);
         emailVerificationRepository.save(verification);
 
-        user.setVerified(true);
-        authRepository.save(user);
-    }
+        if (type == VerificationType.EMAIL_VERIFICATION) {
+            user.setVerified(true);
+            authRepository.save(user);
+            return null;
+        }
 
-    // send forgot password code
-    @Transactional
-    public void sendResetCode(String email) throws MessagingException {
+        // PASSWORD_RESET → generate secure token
+        passwordResetTokenRepository.invalidateAllByUserId(user.getId());
 
-        email = email.trim().toLowerCase();
-
-        User user = authRepository.findByEmail(email)
-                .orElseThrow(() -> new RuntimeException("User not found"));
-
-        String code = String.format("%06d",
-                new SecureRandom().nextInt(900000) + 100000);
-
-        EmailVerification verification = EmailVerification.builder()
+        PasswordResetToken resetToken = PasswordResetToken.builder()
+                .token(UUID.randomUUID().toString())
                 .user(user)
-                .code(code)
-                .type(VerificationType.PASSWORD_RESET) // 🔥 important
-                .expiresAt(LocalDateTime.now().plusMinutes(5))
                 .used(false)
-                .createdAt(LocalDateTime.now())
+                .expiresAt(LocalDateTime.now().plusMinutes(15))
                 .build();
 
-        emailVerificationRepository.save(verification);
+        passwordResetTokenRepository.save(resetToken);
 
-        emailService.sendCodeToEmail(email, code);
+        return resetToken.getToken();
     }
 
-    // Verify forgot password code
+    // resetPassword
     @Transactional
-    public void verifyResetCode(String email, String code) {
+    public void resetPassword(String resetToken, String newPassword) {
 
-        email = email.trim().toLowerCase();
+        PasswordResetToken tokenEntity = passwordResetTokenRepository.findByToken(resetToken)
+                .orElseThrow(() -> new AppException("Invalid reset token"));
 
-        User user = authRepository.findByEmail(email)
-                .orElseThrow(() -> new RuntimeException("User not found"));
-
-        EmailVerification verification = emailVerificationRepository.findTopByUserAndCodeAndTypeAndUsedFalseOrderByCreatedAtDesc(user, code, VerificationType.PASSWORD_RESET)
-                        .orElseThrow(() -> new RuntimeException("Invalid code"));
-
-        if (verification.getExpiresAt().isBefore(LocalDateTime.now())) {
-            throw new RuntimeException("Code expired");
+        if (tokenEntity.isUsed()) {
+            throw new AppException("Reset token has already been used");
         }
 
-        verification.setUsed(true);
-        emailVerificationRepository.save(verification);
-
-        user.setCanResetPassword(true);
-        authRepository.save(user);
-    }
-
-    // Reset password forgot password
-    @Transactional
-    public void resetPassword(String email, String newPassword) {
-
-        email = email.trim().toLowerCase();
-
-        User user = authRepository.findByEmail(email)
-                .orElseThrow(() -> new RuntimeException("User not found"));
-
-        if (!user.isCanResetPassword()) {
-            throw new RuntimeException("Reset not allowed");
+        if (tokenEntity.getExpiresAt().isBefore(LocalDateTime.now())) {
+            throw new AppException("Reset token has expired");
         }
 
+        User user = tokenEntity.getUser();
         user.setPassword(passwordEncoder.encode(newPassword));
-
-        user.setCanResetPassword(false);
-
         authRepository.save(user);
+
+        tokenEntity.setUsed(true);
+        passwordResetTokenRepository.save(tokenEntity);
+    }
+
+    @Transactional(propagation = Propagation.REQUIRES_NEW)
+    public void incrementFailedAttempts(Long userId) {
+        authRepository.incrementFailedAttempts(userId);
+    }
+
+    @Transactional(propagation = Propagation.REQUIRES_NEW)
+    public void resetFailedAttempts(Long userId) {
+        authRepository.resetFailedAttempts(userId);
+    }
+
+    @Transactional(propagation = Propagation.REQUIRES_NEW)
+    public void lockUser(Long userId, ZonedDateTime lockTime) {
+        authRepository.lockUser(userId, lockTime);
     }
 }

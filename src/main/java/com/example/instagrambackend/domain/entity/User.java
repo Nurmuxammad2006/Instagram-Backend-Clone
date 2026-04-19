@@ -12,6 +12,7 @@ import org.springframework.security.core.userdetails.UserDetails;
 import com.example.instagrambackend.domain.enums.Role;
 
 import java.time.LocalDateTime;
+import java.time.ZonedDateTime;
 import java.util.Collection;
 import java.util.List;
 
@@ -56,6 +57,7 @@ public class User implements UserDetails {
     @Column(name = "is_verified")
     private boolean isVerified = false;
 
+
     @Enumerated(EnumType.STRING)
     @Column(length = 20, nullable = false)
     private Role role = Role.USER;
@@ -72,12 +74,20 @@ public class User implements UserDetails {
     @OneToMany(mappedBy = "user", cascade = CascadeType.ALL, orphanRemoval = true)
     private List<EmailVerification> emailTokens;
 
-    @Column(name = "can_reset_password")
-    private boolean canResetPassword = false;
+    @Column(name = "failed_login_attempts")
+    private int failedLoginAttempts = 0;
+
+    @Column(name = "lock_time")
+    private ZonedDateTime lockTime;
 
     @Override
     public Collection<? extends GrantedAuthority> getAuthorities() {
         return List.of(new SimpleGrantedAuthority("ROLE_" + role.name()));
+    }
+
+    public boolean accountLocked() {
+        if (lockTime == null) return false;
+        return lockTime.plusMinutes(15).isAfter(ZonedDateTime.now());
     }
 
     @Override
@@ -87,7 +97,7 @@ public class User implements UserDetails {
 
     @Override
     public boolean isAccountNonLocked() {
-        return true;
+        return !accountLocked();
     }
 
     @Override

@@ -67,6 +67,9 @@ dependencies {
     testImplementation 'org.springframework.boot:spring-boot-starter-test'
     testImplementation 'org.springframework.security:spring-security-test'
     testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
+
+    // bucket4j для rate limiting
+    implementation 'com.bucket4j:bucket4j-core:8.10.1'
 }
 
 tasks.named('test') {

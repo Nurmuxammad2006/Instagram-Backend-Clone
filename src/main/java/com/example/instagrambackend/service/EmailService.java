@@ -22,7 +22,7 @@ public class EmailService {
                 new MimeMessageHelper(message, true, "UTF-8");
 
         helper.setTo(toEmail);
-        helper.setSubject("Your Verification Code - PDP Online");
+        helper.setSubject("Your Verification Code - Chatting");
         helper.setText(buildEmailTemplate(code), true);
 
         mailSender.send(message);

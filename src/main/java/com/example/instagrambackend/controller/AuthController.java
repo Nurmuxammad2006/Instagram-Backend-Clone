@@ -1,10 +1,15 @@
 package com.example.instagrambackend.controller;
 
+import com.example.instagrambackend.domain.enums.VerificationType;
 import com.example.instagrambackend.domain.requests.Login;
 import com.example.instagrambackend.domain.requests.Register;
 import com.example.instagrambackend.domain.response.AuthResponse;
 import com.example.instagrambackend.domain.response.BaseResponse;
+import com.example.instagrambackend.domain.response.PasswordResetResponse;
+import com.example.instagrambackend.exception.AppException;
 import com.example.instagrambackend.service.AuthService;
+import com.example.instagrambackend.service.RateLimitService;
+import jakarta.servlet.http.HttpServletRequest;
 import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
 import org.springframework.http.HttpStatus;
@@ -19,6 +24,13 @@ import java.util.Map;   // Add this import
 public class AuthController {
 
     private final AuthService authService;
+    private final RateLimitService rateLimitService;
+
+    // Helper method to extract IP — add this to the controller
+    private String getClientIp(HttpServletRequest request) {
+        String forwarded = request.getHeader("X-Forwarded-For");
+        return (forwarded != null) ? forwarded.split(",")[0].trim() : request.getRemoteAddr();
+    }
 
     @PostMapping("/register")
     public ResponseEntity<AuthResponse> register(@RequestBody @Valid Register register) {
@@ -26,33 +38,50 @@ public class AuthController {
     }
 
     @PostMapping("/login")
-    public ResponseEntity<AuthResponse> login(@RequestBody @Valid Login login) {
+    public ResponseEntity<AuthResponse> login(
+            @RequestBody @Valid Login login,
+            HttpServletRequest request) {
+
+        if (!rateLimitService.tryLoginConsume(getClientIp(request))) {
+            throw new AppException("Too many login attempts. Please wait 1 minute.", HttpStatus.TOO_MANY_REQUESTS);
+        }
+
         return ResponseEntity.ok(authService.loginUser(login));
     }
 
-    // send-code
+    // ? MERGED: /send-code?type=EMAIL_VERIFICATION or PASSWORD_RESET
     @PostMapping("/send-code")
-    public BaseResponse sendCode(@RequestBody Map<String, String> request) {
-        String email = request.get("email");
+    public BaseResponse sendCode(
+            @RequestBody Map<String, String> request,
+            @RequestParam(defaultValue = "EMAIL_VERIFICATION") VerificationType type,
+            HttpServletRequest httpRequest) {
 
+        if (!rateLimitService.trySendCodeConsume(getClientIp(httpRequest))) {
+            throw new AppException("Too many requests. Please wait 10 minutes.", HttpStatus.TOO_MANY_REQUESTS);
+        }
+
+        String email = request.get("email");
         if (email == null || email.trim().isEmpty()) {
             throw new IllegalArgumentException("Email is required");
         }
 
         try {
-            authService.sendCode(email.trim().toLowerCase());
+            authService.sendCode(email.trim().toLowerCase(), type);
             BaseResponse response = new BaseResponse();
-            response.setMessage("Verification code sent successfully");
+            response.setMessage("Code sent successfully");
             response.setCode(HttpStatus.OK.value());
             return response;
         } catch (Exception e) {
-            throw new RuntimeException("Failed to send code: " + e.getMessage());
+            throw new AppException("Failed to send code: " + e.getMessage());
         }
     }
 
-    // verify-code
+    // ? MERGED: /verify-code?type=EMAIL_VERIFICATION or PASSWORD_RESET
     @PostMapping("/verify-code")
-    public BaseResponse verifyCode(@RequestBody Map<String, String> request) {
+    public ResponseEntity<?> verifyCode(
+            @RequestBody Map<String, String> request,
+            @RequestParam(defaultValue = "EMAIL_VERIFICATION") VerificationType type) {
+
         String email = request.get("email");
         String code = request.get("code");
 
@@ -60,63 +89,56 @@ public class AuthController {
             throw new IllegalArgumentException("Email and code are required");
         }
 
-        authService.verifyCode(email.trim().toLowerCase(), code.trim());
+        Object result = authService.verifyCode(email.trim().toLowerCase(), code.trim(), type);
+
+        if (type == VerificationType.PASSWORD_RESET) {
+            return ResponseEntity.ok(new PasswordResetResponse(
+                    (String) result,
+                    "Code verified. Use the resetToken to reset your password."
+            ));
+        }
 
         BaseResponse response = new BaseResponse();
-        response.setMessage("Verification successful");
+        response.setMessage("Email verified successfully");
         response.setCode(HttpStatus.OK.value());
-        return response;
-    }
-
-    @PostMapping("/forgot-password")
-    public BaseResponse forgotPassword(@RequestBody Map<String, String> request) {
-        String email = request.get("email");
-
-        if (email == null || email.trim().isEmpty()) {
-            throw new IllegalArgumentException("Email is required");
-        }
-
-        try {
-            authService.sendResetCode(email.trim().toLowerCase());
-            BaseResponse response = new BaseResponse();
-            response.setMessage("Password reset code sent successfully");
-            response.setCode(HttpStatus.OK.value());
-            return response;
-        } catch (Exception e) {
-            throw new RuntimeException("Failed to send password reset code: " + e.getMessage());
-        }
-    }
-
-    @PostMapping("/verify-reset-code")
-    public BaseResponse verifyResetCode(@RequestBody Map<String, String> request) {
-        String email = request.get("email");
-        String code = request.get("code");
-
-        if (email == null || code == null) {
-            throw new IllegalArgumentException("Email and code are required");
-        }
-
-        authService.verifyResetCode(email.trim().toLowerCase(), code.trim());
-
-        BaseResponse response = new BaseResponse();
-        response.setMessage("Password reset code verified successfully");
-        response.setCode(HttpStatus.OK.value());
-        return response;
+        return ResponseEntity.ok(response);
     }
 
     @PostMapping("/reset-password")
     public BaseResponse resetPassword(@RequestBody Map<String, String> request) {
-        String email = request.get("email");
+        String resetToken = request.get("resetToken");
         String newPassword = request.get("newPassword");
 
-        if (email == null || newPassword == null) {
-            throw new IllegalArgumentException("Email and new password are required");
+        if (resetToken == null || newPassword == null) {
+            throw new IllegalArgumentException("Reset token and new password are required");
         }
 
-    authService.resetPassword(email.trim().toLowerCase(), newPassword.trim());
+        authService.resetPassword(resetToken.trim(), newPassword.trim());
 
         BaseResponse response = new BaseResponse();
         response.setMessage("Password reset successfully");
+        response.setCode(HttpStatus.OK.value());
+        return response;
+    }
+
+    @PostMapping("/refresh-token")
+    public ResponseEntity<AuthResponse> refresh(@RequestBody Map<String, String> request) {
+        String token = request.get("refreshToken");
+        if (token == null || token.isBlank()) {
+            throw new IllegalArgumentException("Refresh token is required");
+        }
+        return ResponseEntity.ok(authService.refreshToken(token));
+    }
+
+    @PostMapping("/logout")
+    public BaseResponse logout(@RequestBody Map<String, String> request) {
+        String token = request.get("refreshToken");
+        if (token == null || token.isBlank()) {
+            throw new IllegalArgumentException("Refresh token is required");
+        }
+        authService.logout(token);
+        BaseResponse response = new BaseResponse();
+        response.setMessage("Logged out successfully");
         response.setCode(HttpStatus.OK.value());
         return response;
     }
