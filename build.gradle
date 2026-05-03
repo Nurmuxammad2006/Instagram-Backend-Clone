@@ -55,8 +55,7 @@ dependencies {
     // Scheduler (Quartz)
     implementation 'org.springframework.boot:spring-boot-starter-quartz'
 
-    // ==================== API Documentation ====================
-    // ✅ Только ОДНА правильная зависимость springdoc (новая версия)
+    // Swagger UI для Spring MVC
     implementation 'org.springdoc:springdoc-openapi-starter-webmvc-ui:3.0.1'
 
     // Lombok

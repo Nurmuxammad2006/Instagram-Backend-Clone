@@ -95,8 +95,6 @@ public class JwtService {
                 .compact();
     }
 
-    // ========== VALIDATION METHODS ==========
-
     public boolean isTokenValid(String token, UserDetails userDetails) {
         final String email = extractEmail(token);
         return (email.equals(userDetails.getUsername())) && !isTokenExpired(token);
@@ -106,8 +104,6 @@ public class JwtService {
         final String email = extractEmail(token);
         return (email.equals(user.getEmail())) && !isTokenExpired(token);
     }
-
-    // ========== HELPER METHODS ==========
 
     public long getRefreshTokenExpiration() {
         return refreshTokenExpiration;
