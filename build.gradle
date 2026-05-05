@@ -71,6 +71,9 @@ dependencies {
 
     // bucket4j для rate limiting
     implementation 'com.bucket4j:bucket4j-core:8.10.1'
+
+    // Environment variables from .env file
+    implementation 'io.github.cdimascio:dotenv-java:3.0.0'
 }
 
 tasks.named('test') {
